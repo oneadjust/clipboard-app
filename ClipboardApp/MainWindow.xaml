@@ -18,6 +18,72 @@
         <converters:EntryTypeVisibilityConverter x:Key="TextVisibility" Match="Text" />
         <converters:EntryTypeVisibilityConverter x:Key="ImageVisibility" Match="Image" />
 
+        <Style x:Key="TransparentScrollButton" TargetType="{x:Type RepeatButton}">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RepeatButton}">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid x:Name="Root"
+                              Width="{TemplateBinding Width}"
+                              Background="Transparent">
+                            <Track x:Name="PART_Track"
+                                   IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Style="{StaticResource TransparentScrollButton}" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="34">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="ThumbRoot"
+                                                        Width="4"
+                                                        Margin="1,0,2,0"
+                                                        Background="#55D8E8F7"
+                                                        CornerRadius="2" />
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbRoot" Property="Background" Value="#8AD8E8F7" />
+                                                        <Setter TargetName="ThumbRoot" Property="Width" Value="5" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbRoot" Property="Background" Value="#B0D8E8F7" />
+                                                        <Setter TargetName="ThumbRoot" Property="Width" Value="5" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Style="{StaticResource TransparentScrollButton}" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter TargetName="Root" Property="Height" Value="7" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="IconButton" TargetType="Button">
             <Setter Property="Foreground" Value="#F2F6FA" />
             <Setter Property="Background" Value="#243141" />
@@ -76,20 +142,11 @@
                                FontSize="12"
                                Margin="1,2,0,0" />
                 </StackPanel>
-                <Button DockPanel.Dock="Right"
-                        Style="{StaticResource IconButton}"
-                        Content="×"
-                        FontSize="18"
-                        Width="38"
-                        Padding="0"
-                        Click="HideButton_Click"
-                        ToolTip="隐藏" />
             </DockPanel>
 
             <Grid Grid.Row="1" Margin="0,0,0,14">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Border Background="#1F2A38"
                         BorderBrush="#405267"
@@ -121,11 +178,6 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
-                <Button Grid.Column="1"
-                        Style="{StaticResource IconButton}"
-                        Content="清空"
-                        Margin="10,0,0,0"
-                        Click="ClearButton_Click" />
             </Grid>
 
             <ListBox x:Name="EntryList"
@@ -207,12 +259,25 @@
                                 </StackPanel>
 
                                 <Button Grid.Column="1"
-                                        Content="删除"
+                                        Width="34"
+                                        Height="34"
+                                        Padding="0"
                                         Background="#7A2634"
                                         BorderBrush="#A94658"
                                         Margin="12,0,0,0"
                                         VerticalAlignment="Center"
-                                        Click="DeleteEntryButton_Click">
+                                        Click="DeleteEntryButton_Click"
+                                        ToolTip="删除">
+                                    <Viewbox Width="14" Height="14">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Data="M8,8 L8.7,20 L15.3,20 L16,8 M6,8 L18,8 M10,6 L14,6 M10.5,11 L10.5,17 M13.5,11 L13.5,17"
+                                                  Stroke="#F9D6DD"
+                                                  StrokeThickness="2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round" />
+                                        </Canvas>
+                                    </Viewbox>
                                     <Button.Style>
                                         <Style TargetType="Button" BasedOn="{StaticResource IconButton}">
                                             <Setter Property="Visibility" Value="Collapsed" />
@@ -237,12 +302,6 @@
             </ListBox>
 
             <DockPanel Grid.Row="3" Margin="0,10,0,0">
-                <CheckBox x:Name="StartupCheckBox"
-                          Content="开机自启"
-                          Foreground="#D8E8F7"
-                          VerticalAlignment="Center"
-                          Checked="StartupCheckBox_Changed"
-                          Unchecked="StartupCheckBox_Changed" />
                 <TextBlock DockPanel.Dock="Right"
                            Text="左键复制，右键删除"
                            Foreground="#8195A9"

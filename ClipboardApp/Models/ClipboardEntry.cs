@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 using System.Windows.Media.Imaging;
 
 namespace ClipboardApp.Models;
@@ -13,14 +14,32 @@ public enum ClipboardEntryType
 public sealed class ClipboardEntry : INotifyPropertyChanged
 {
     private bool _isDeleteArmed;
+    private DateTime _createdAt = DateTime.Now;
     private BitmapImage? _thumbnail;
 
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public ClipboardEntryType Type { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string ContentHash { get; set; } = string.Empty;
     public string? Text { get; set; }
     public string? ImagePath { get; set; }
 
+    public DateTime CreatedAt
+    {
+        get => _createdAt;
+        set
+        {
+            if (_createdAt == value)
+            {
+                return;
+            }
+
+            _createdAt = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(TimeLabel));
+        }
+    }
+
+    [JsonIgnore]
     public bool IsDeleteArmed
     {
         get => _isDeleteArmed;
@@ -36,6 +55,7 @@ public sealed class ClipboardEntry : INotifyPropertyChanged
         }
     }
 
+    [JsonIgnore]
     public BitmapImage? Thumbnail
     {
         get => _thumbnail;

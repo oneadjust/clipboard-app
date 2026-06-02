@@ -18,11 +18,11 @@ public partial class MainWindow : Window, IDisposable
 {
     private readonly ObservableCollection<ClipboardEntry> _entries = [];
     private readonly ClipboardStore _store = new();
-    private readonly StartupService _startupService = new();
     private ICollectionView? _view;
     private ClipboardWatcher? _watcher;
-    private bool _isInternalClipboardUpdate;
-    private bool _isUpdatingStartupCheck;
+    private readonly SemaphoreSlim _persistLock = new(1, 1);
+    private string? _suppressedClipboardHash;
+    private DateTime _suppressedClipboardHashExpiresAt;
     private ClipboardEntry? _armedEntry;
 
     public MainWindow()
@@ -31,8 +31,6 @@ public partial class MainWindow : Window, IDisposable
         DataContext = _entries;
         SourceInitialized += MainWindow_SourceInitialized;
     }
-
-    public event EventHandler<bool>? StartupChanged;
 
     public async Task InitializeAsync()
     {
@@ -48,7 +46,6 @@ public partial class MainWindow : Window, IDisposable
         _view = CollectionViewSource.GetDefaultView(_entries);
         _view.Filter = FilterEntry;
         UpdateCountText();
-        SetStartupCheck(_startupService.IsEnabled());
     }
 
     public void ToggleNearTray()
@@ -59,17 +56,15 @@ public partial class MainWindow : Window, IDisposable
             return;
         }
 
+        ShowNearTray();
+    }
+
+    public void ShowNearTray()
+    {
         PositionNearTray();
         Show();
         Activate();
         SearchBox.Focus();
-    }
-
-    public void SetStartupCheck(bool enabled)
-    {
-        _isUpdatingStartupCheck = true;
-        StartupCheckBox.IsChecked = enabled;
-        _isUpdatingStartupCheck = false;
     }
 
     public void ConfirmAndClearHistory()
@@ -82,6 +77,7 @@ public partial class MainWindow : Window, IDisposable
     public void Dispose()
     {
         _watcher?.Dispose();
+        _persistLock.Dispose();
     }
 
     private void MainWindow_SourceInitialized(object? sender, EventArgs e)
@@ -93,12 +89,6 @@ public partial class MainWindow : Window, IDisposable
 
     private async void ClipboardWatcher_ClipboardChanged(object? sender, EventArgs e)
     {
-        if (_isInternalClipboardUpdate)
-        {
-            _isInternalClipboardUpdate = false;
-            return;
-        }
-
         try
         {
             ClipboardEntry? entry = null;
@@ -111,6 +101,7 @@ public partial class MainWindow : Window, IDisposable
                     entry = new ClipboardEntry
                     {
                         Type = ClipboardEntryType.Text,
+                        ContentHash = _store.CreateTextHash(text),
                         Text = text,
                         CreatedAt = DateTime.Now
                     };
@@ -127,16 +118,23 @@ public partial class MainWindow : Window, IDisposable
                         CreatedAt = DateTime.Now
                     };
                     entry.ImagePath = _store.SaveImage(image, entry.Id);
+                    entry.ContentHash = _store.CreateImageHash(entry.ImagePath);
                     entry.Thumbnail = _store.LoadImage(entry.ImagePath);
                 }
             }
 
-            if (entry is null || IsDuplicateOfLatest(entry))
+            if (entry is null)
             {
                 return;
             }
 
-            _entries.Insert(0, entry);
+            if (ShouldSuppressClipboardEntry(entry))
+            {
+                _store.DeleteEntryAssets(entry);
+                return;
+            }
+
+            UpsertEntry(entry);
             await PersistAsync();
             RefreshView();
         }
@@ -146,20 +144,27 @@ public partial class MainWindow : Window, IDisposable
         }
     }
 
-    private bool IsDuplicateOfLatest(ClipboardEntry entry)
+    private void UpsertEntry(ClipboardEntry entry)
     {
-        var latest = _entries.FirstOrDefault();
-        if (latest is null || latest.Type != entry.Type)
+        var existing = _entries.FirstOrDefault(item =>
+            string.Equals(item.ContentHash, entry.ContentHash, StringComparison.Ordinal));
+        if (existing is null)
         {
-            return false;
+            _entries.Insert(0, entry);
+            return;
         }
 
-        if (entry.Type == ClipboardEntryType.Text)
+        existing.CreatedAt = entry.CreatedAt;
+        if (existing.Type == ClipboardEntryType.Image)
         {
-            return string.Equals(latest.Text, entry.Text, StringComparison.Ordinal);
+            _store.DeleteEntryAssets(entry);
         }
 
-        return false;
+        var oldIndex = _entries.IndexOf(existing);
+        if (oldIndex > 0)
+        {
+            _entries.Move(oldIndex, 0);
+        }
     }
 
     private bool FilterEntry(object item)
@@ -181,8 +186,16 @@ public partial class MainWindow : Window, IDisposable
 
     private async Task PersistAsync()
     {
-        await _store.SaveAsync(_entries);
-        UpdateCountText();
+        await _persistLock.WaitAsync();
+        try
+        {
+            await _store.SaveAsync(_entries);
+            UpdateCountText();
+        }
+        finally
+        {
+            _persistLock.Release();
+        }
     }
 
     private void RefreshView()
@@ -250,7 +263,7 @@ public partial class MainWindow : Window, IDisposable
     {
         try
         {
-            _isInternalClipboardUpdate = true;
+            SuppressNextClipboardEntry(entry.ContentHash);
 
             if (entry.Type == ClipboardEntryType.Text && entry.Text is not null)
             {
@@ -271,8 +284,43 @@ public partial class MainWindow : Window, IDisposable
         }
         catch
         {
-            _isInternalClipboardUpdate = false;
+            ClearSuppressedClipboardEntry(entry.ContentHash);
         }
+    }
+
+    private void SuppressNextClipboardEntry(string contentHash)
+    {
+        _suppressedClipboardHash = contentHash;
+        _suppressedClipboardHashExpiresAt = DateTime.Now.AddSeconds(2);
+    }
+
+    private bool ShouldSuppressClipboardEntry(ClipboardEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(_suppressedClipboardHash)
+            || DateTime.Now > _suppressedClipboardHashExpiresAt)
+        {
+            ClearSuppressedClipboardEntry();
+            return false;
+        }
+
+        if (!string.Equals(_suppressedClipboardHash, entry.ContentHash, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ClearSuppressedClipboardEntry(string? contentHash = null)
+    {
+        if (contentHash is not null
+            && !string.Equals(_suppressedClipboardHash, contentHash, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _suppressedClipboardHash = null;
+        _suppressedClipboardHashExpiresAt = DateTime.MinValue;
     }
 
     private void ArmEntry(ClipboardEntry? entry)
@@ -296,16 +344,23 @@ public partial class MainWindow : Window, IDisposable
             return;
         }
 
-        _store.DeleteEntryAssets(entry);
-        _entries.Remove(entry);
-        ArmEntry(null);
-        await PersistAsync();
-        RefreshView();
-    }
-
-    private void HideButton_Click(object sender, RoutedEventArgs e)
-    {
-        Hide();
+        try
+        {
+            _store.DeleteEntryAssets(entry);
+            _entries.Remove(entry);
+            ArmEntry(null);
+            await PersistAsync();
+            RefreshView();
+        }
+        catch (Exception ex)
+        {
+            WinMessageBox.Show(
+                this,
+                $"删除失败：{ex.Message}",
+                "删除历史",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     private void Window_Deactivated(object sender, EventArgs e)
@@ -333,11 +388,6 @@ public partial class MainWindow : Window, IDisposable
         RefreshView();
     }
 
-    private void ClearButton_Click(object sender, RoutedEventArgs e)
-    {
-        ClearHistoryWithConfirmation();
-    }
-
     private async void ClearHistoryWithConfirmation()
     {
         var result = WinMessageBox.Show(
@@ -352,23 +402,23 @@ public partial class MainWindow : Window, IDisposable
             return;
         }
 
-        _store.DeleteAllAssets(_entries);
-        _entries.Clear();
-        ArmEntry(null);
-        await PersistAsync();
-        RefreshView();
-    }
-
-    private void StartupCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isUpdatingStartupCheck)
+        try
         {
-            return;
+            _store.DeleteAllAssets(_entries);
+            _entries.Clear();
+            ArmEntry(null);
+            await PersistAsync();
+            RefreshView();
         }
-
-        var enabled = StartupCheckBox.IsChecked == true;
-        _startupService.SetEnabled(enabled);
-        StartupChanged?.Invoke(this, enabled);
+        catch (Exception ex)
+        {
+            WinMessageBox.Show(
+                this,
+                $"清空失败：{ex.Message}",
+                "清空历史",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     private ClipboardEntry? FindEntryFromEvent(object originalSource)
@@ -382,7 +432,7 @@ public partial class MainWindow : Window, IDisposable
                 return entry;
             }
 
-            element = System.Windows.Media.VisualTreeHelper.GetParent(element);
+            element = GetParent(element);
         }
 
         return null;
@@ -397,7 +447,28 @@ public partial class MainWindow : Window, IDisposable
                 return target;
             }
 
-            current = System.Windows.Media.VisualTreeHelper.GetParent(current);
+            current = GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static DependencyObject? GetParent(DependencyObject current)
+    {
+        if (current is System.Windows.Media.Visual
+            || current is System.Windows.Media.Media3D.Visual3D)
+        {
+            return System.Windows.Media.VisualTreeHelper.GetParent(current);
+        }
+
+        if (current is FrameworkElement frameworkElement)
+        {
+            return frameworkElement.Parent;
+        }
+
+        if (current is FrameworkContentElement frameworkContentElement)
+        {
+            return frameworkContentElement.Parent;
         }
 
         return null;
